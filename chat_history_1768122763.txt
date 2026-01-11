@@ -1,0 +1,45 @@
+BETOPIA CHAT SESSION HISTORY
+========================================
+USER: Hello, can you hear me? Yeah, I know.
+BOT: I can hear you! How can I assist you today? If you have any questions or if you're interested in our services, feel free to ask!
+------------------------------
+USER: What's your, what's your services? Explain me in brief.
+BOT: We offer a variety of services, including:
+
+1. **Branding, Design & Motion Graphics**: Creative services to enhance your brand identity.
+2. **Virtual Assistance & UX/UI Services**: Support for administrative tasks and user experience design.
+3. **Cloud Infrastructure, SaaS Hosting & DevOps Automation**: Solutions for cloud management and software deployment.
+4. **AI Models, Chatbots & Automation**: Development of AI-driven solutions for various applications.
+5. **Custom Software & App Development**: Tailored software solutions to meet specific business needs.
+6. **Sales, HR & Growth Acceleration**: Services to boost your sales and enhance human resource management.
+7. **Smart IT & Business Solutions for Digital Growth**: Comprehensive IT solutions to support your business growth.
+
+Would you like to schedule a meeting to discuss this further?
+------------------------------
+USER: loose doo
+BOT: I don't have that specific info in my records, but I can check with our team. Would you like to schedule a meeting to discuss this?
+------------------------------
+USER: I would like to schedule a meeting.
+BOT: Great! To schedule a meeting, I'll need a few details from you:
+
+1. **Full Name**
+2. **Email**
+3. **Phone Number**
+
+Please provide this information, and I'll get everything set up for you!
+------------------------------
+USER: Full name is Urmi Kormogar.
+BOT: I have noted your full name as Urmi Kormogar. Could you please provide your email and phone number to complete the scheduling of your meeting?
+------------------------------
+USER: Urmi Karmakar, urmi16@gmail.com, 01302345678
+BOT: I have your details as Name: Urmi Kormogar, Email: urmi16@gmail.com, and Phone: 01302345678. Your meeting has been successfully scheduled! If you have any other questions in the meantime, feel free to ask.
+------------------------------
+USER: Urmi Karmakar
+BOT: I don't have that specific info in my records, but since you already have a meeting scheduled, our team will be happy to assist you then. If you have any other questions or need further assistance, feel free to ask!
+------------------------------
+USER: name Urmi Karmakar
+BOT: I don't have that specific info in my records, but since you already have a meeting scheduled, our team will be happy to assist you then. If you have any other questions or need further assistance, feel free to ask!
+------------------------------
+USER: Urmi Karmakar, urmi16@gmail.com, 01302345678
+BOT: I don't have that specific info in my records, but since you already have a meeting scheduled, our team will be happy to assist you then. If you have any other questions or need further assistance, feel free to ask!
+------------------------------

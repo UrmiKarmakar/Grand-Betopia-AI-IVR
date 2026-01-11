@@ -1,3 +1,4 @@
+# app/rag/chunker.py
 def chunk_text(text, chunk_size=500, chunk_overlap=100):
     """
     Split text into overlapping chunks.

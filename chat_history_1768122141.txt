@@ -1,0 +1,45 @@
+BETOPIA CHAT SESSION HISTORY
+========================================
+USER: Hello, can you hear?
+BOT: Yes, I can hear you! How can I assist you today?
+------------------------------
+USER: What company this is and what is major works?
+BOT: The company is a global IT powerhouse focused on delivering secure, scalable, and AI-driven platforms. They specialize in various services, including:
+
+- AI automation and ERP systems
+- Full-stack development
+- Design and marketing
+- IT infrastructure management
+- Cloud infrastructure, SaaS hosting, and DevOps automation
+- Custom software and app development
+- Sales, HR, and growth acceleration
+- Smart IT and business solutions for digital growth
+
+With over 14 years of experience, they have completed 50,000+ projects and serve 40,000+ clients worldwide, employing over 4,000 professionals across more than 30 countries.
+
+Would you like to schedule a meeting to discuss this further?
+------------------------------
+USER: okay let's schedule a meeting
+BOT: To schedule a meeting, I'll need a few details from you:
+
+1. Your full name
+2. Your email address
+3. Your phone number
+
+Could you please provide that information?
+------------------------------
+USER: My name is Urmi.
+BOT: I have noted your name as Urmi. Could you please provide your email address and phone number to complete the scheduling?
+------------------------------
+USER: the misconceptions. My nails are curled. I think it was easy.
+BOT: I don't have that specific info in my records, but I can check with our team. Would you like to schedule a meeting to discuss this?
+------------------------------
+USER: email: urmi@gmail phone 12345
+BOT: I have your details as Name: Urmi, Email: urmi@gmail, and Phone: 12345. Is this correct?
+------------------------------
+USER: urmi@gmail.com
+BOT: I have your details as Name: Urmi, Email: urmi@gmail, and Phone: 12345. Is this correct?
+------------------------------
+USER: ok
+BOT: I don't have that specific info in my records, but since you already have a meeting scheduled, our team will be happy to assist you then.
+------------------------------

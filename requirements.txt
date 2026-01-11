@@ -1,5 +1,19 @@
-openai>=1.0.0
-faiss-cpu>=1.7.4
-numpy>=1.23.0,<2.0.0
-PyPDF2>=3.0.0
-python-dotenv>=1.0.0
+# Core AI & API
+openai
+python-dotenv
+
+# Vector Search & Math
+numpy
+faiss-cpu  # Use faiss-gpu if you have a supported NVIDIA GPU
+scipy
+
+# Document & Image Processing
+PyPDF2
+# Note: Ensure you have any specific dependencies for your custom image_loader (like Pillow or pytesseract)
+
+# Audio & Voice
+sounddevice
+pygame
+
+# Utilities (often needed for RAG pipelines)
+tiktoken
