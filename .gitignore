@@ -5,3 +5,4 @@ bookings_json/*.json
 __pycache__/
 *.pyc
 .DS_Store
+.vscode/
