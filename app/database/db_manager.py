@@ -1,3 +1,4 @@
+# app/database/db_manager.py
 import sqlite3
 import json
 from pathlib import Path
@@ -117,3 +118,33 @@ def db_execute_booking(name, email, phone, room_name, check_in, check_out):
         return f"FAILED: {str(e)}"
     finally:
         conn.close()
+
+def db_cancel_booking(email, room_name):
+    """Deletes booking from DB and JSON folder to free up availability."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        # Find the booking ID
+        cursor.execute('''
+            SELECT b.B_ID FROM Bookings b
+            JOIN User u ON b.U_ID = u.U_ID
+            JOIN Services s ON b.S_ID = s.S_ID
+            WHERE u.email = ? AND s.name LIKE ?
+            ORDER BY b.B_ID DESC LIMIT 1
+        ''', (email, f"%{room_name}%"))
+        
+        res = cursor.fetchone()
+        if res:
+            b_id = res[0]
+            cursor.execute("DELETE FROM Bookings WHERE B_ID = ?", (b_id,))
+            
+            # Delete JSON
+            json_file = JSON_DIR / f"booking_{b_id}.json"
+            if json_file.exists(): json_file.unlink()
+            
+            conn.commit()
+            return f"SUCCESS: Booking #{b_id} cancelled. Room is now available."
+        return "ERROR: No matching booking found for that email and room."
+    finally:
+        conn.close()
+

@@ -1,3 +1,4 @@
+# app/main.py
 import os
 import json
 import sys
@@ -14,11 +15,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 # Database and RAG Imports
-from database.db_manager import init_db, db_get_room, db_execute_booking
+from database.db_manager import init_db, db_get_room, db_execute_booking, db_cancel_booking
 from rag.vector_store import load_faiss_index
 from rag.retriever import retrieve_chunks
 from rag.embeddings import embed_texts
 from rag.prompt import build_prompt
+from rag.tools import TOOLS
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -31,47 +33,6 @@ META_PATH = DATA_DIR / "hotel_metadata.json"
 
 index = None
 conversation_history = [] 
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "check_room_availability",
-            "description": "Check if a specific room type is available for given dates. Use this before finalize.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "room_type": {
-                        "type": "string", 
-                        "enum": ["Deluxe King", "Deluxe Twin", "Premier King", "Premier Twin", "Pacific Club Twin", "Junior Suite", "Executive Suite", "Bengali Suite", "International Suite"]
-                    },
-                    "check_in": {"type": "string", "description": "YYYY-MM-DD or natural date"},
-                    "check_out": {"type": "string", "description": "YYYY-MM-DD or natural date"}
-                },
-                "required": ["room_type", "check_in", "check_out"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finalize_hotel_booking",
-            "description": "Saves the booking to database and generates a JSON confirmation file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "email": {"type": "string"},
-                    "phone": {"type": "string"},
-                    "room_name": {"type": "string"},
-                    "check_in": {"type": "string"},
-                    "check_out": {"type": "string"}
-                },
-                "required": ["name", "email", "phone", "room_name", "check_in", "check_out"]
-            }
-        }
-    }
-]
 
 def get_ai_response(user_input):
     global conversation_history, index
@@ -87,11 +48,11 @@ def get_ai_response(user_input):
     prompt_content = build_prompt(context, user_input, history_pairs)
     
     messages = [
-        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge. Always use tools to verify availability or save bookings. Today is January 21, 2026."},
+        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge. Always use tools to verify availability, save, or cancel bookings. Today is January 21, 2026."},
         {"role": "user", "content": prompt_content}
     ]
     
-    # 4. OpenAI Call
+    # 4. Initial OpenAI Call
     response = client.chat.completions.create(
         model="gpt-4o-mini", 
         messages=messages, 
@@ -101,42 +62,38 @@ def get_ai_response(user_input):
     
     msg = response.choices[0].message
     
-    # 5. Tool Handling
+    # 5. Tool Handling Logic
     if msg.tool_calls:
         messages.append(msg)
         for tool_call in msg.tool_calls:
             args = json.loads(tool_call.function.arguments)
+            call_name = tool_call.function.name
+            
             try:
-                if tool_call.function.name == "check_room_availability":
-                    # Uses the db_get_room from db_manager
+                if call_name == "check_room_availability":
                     res = db_get_room(args['room_type'], args['check_in'], args['check_out'])
-                    if res:
-                        result = f"Available: {args['room_type']} is ৳{res[1]} per night."
-                    else:
-                        result = f"Unavailable: {args['room_type']} is occupied."
+                    result = f"Available: {args['room_type']} at ৳{res[1]} per night." if res else "Unavailable: Occupied."
                 
-                elif tool_call.function.name == "finalize_hotel_booking":
-                    # Maps to db_execute_booking which now handles DB + JSON
-                    result = db_execute_booking(
-                        name=args['name'],
-                        email=args['email'],
-                        phone=args['phone'],
-                        room_name=args['room_name'],
-                        check_in=args['check_in'],
-                        check_out=args['check_out']
-                    )
+                elif call_name == "finalize_hotel_booking":
+                    result = db_execute_booking(**args)
+                    
+                elif call_name == "cancel_hotel_booking":
+                    # Integration with the new Cancellation function
+                    result = db_cancel_booking(args['email'], args['room_name'])
+                else:
+                    result = "Error: Tool not found."
             
             except Exception as e:
-                result = f"Error: {str(e)}"
+                result = f"System Error: {str(e)}"
 
             messages.append({
                 "tool_call_id": tool_call.id, 
                 "role": "tool", 
-                "name": tool_call.function.name, 
+                "name": call_name, 
                 "content": result
             })
         
-        # Second call to generate the final verbal response
+        # Second call to generate the verbal response based on tool results
         final_res = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
         return final_res.choices[0].message.content
     
@@ -144,13 +101,13 @@ def get_ai_response(user_input):
 
 def main():
     global index
-    init_db()  # Ensures tables exist before starting
+    init_db()  
     
     if INDEX_PATH.exists():
         index = load_faiss_index(str(INDEX_PATH), str(META_PATH))
         print(" Knowledge Base Loaded.")
     else:
-        print(" Warning: Knowledge base not found. Alex will rely on general knowledge.")
+        print(" Warning: Knowledge base not found.")
 
     print("\n" + "-"*60)
     print("           GRAND BETOPIA HOTEL IVR SYSTEM           ")
