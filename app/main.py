@@ -1,198 +1,178 @@
 import os
-import time
 import json
-import shlex
+import sys
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# 1. SILENCE LOGGING: Keeps the terminal clean
+# Standard Path setup
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Silence excessive logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
-# Custom RAG & Voice Imports
-from rag.pdf_loader import load_all_pdfs_text
-from rag.image_reader import load_all_images_text
-from rag.chunker import chunk_text
-from rag.embeddings import embed_texts
-from rag.vector_store import create_faiss_index
+# Database and RAG Imports
+from database.db_manager import init_db, db_get_room, db_execute_booking
+from rag.vector_store import load_faiss_index
 from rag.retriever import retrieve_chunks
+from rag.embeddings import embed_texts
 from rag.prompt import build_prompt
-from rag.upload_manager import save_uploaded_files, build_temp_index, clear_tmp_dir
-from rag.actions import schedule_meeting 
-from voice.stt import record_audio, cleanup_audio
-from voice.stt_openai import speech_to_text
-from voice.tts import speak_text
 
-# CONFIGURATION
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Define the Tool Schema
-TOOLS = [{
-    "type": "function",
-    "function": {
-        "name": "schedule_meeting",
-        "description": "ONLY call this if the user EXPLICITLY asks to book a meeting.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "User's full name"},
-                "email": {"type": "string", "description": "User's email"},
-                "phone": {"type": "string", "description": "User's phone number"}
-            },
-            "required": ["name", "email", "phone"]
-        }
-    }
-}]
-
-# PATHS & SESSION STATE
+# Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-TMP_UPLOAD_DIR = DATA_DIR / "tmp"
-MAX_MEMORY_TURNS = 10
+INDEX_PATH = DATA_DIR / "hotel_knowledge.bin"
+META_PATH = DATA_DIR / "hotel_metadata.json"
 
-conversation_history = []
-temp_index = None
-meeting_scheduled_in_session = False
-voice_output_enabled = False 
+index = None
+conversation_history = [] 
 
-# HELPER FUNCTIONS
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_room_availability",
+            "description": "Check if a specific room type is available for given dates. Use this before finalize.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "room_type": {
+                        "type": "string", 
+                        "enum": ["Deluxe King", "Deluxe Twin", "Premier King", "Premier Twin", "Pacific Club Twin", "Junior Suite", "Executive Suite", "Bengali Suite", "International Suite"]
+                    },
+                    "check_in": {"type": "string", "description": "YYYY-MM-DD or natural date"},
+                    "check_out": {"type": "string", "description": "YYYY-MM-DD or natural date"}
+                },
+                "required": ["room_type", "check_in", "check_out"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finalize_hotel_booking",
+            "description": "Saves the booking to database and generates a JSON confirmation file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "email": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "room_name": {"type": "string"},
+                    "check_in": {"type": "string"},
+                    "check_out": {"type": "string"}
+                },
+                "required": ["name", "email", "phone", "room_name", "check_in", "check_out"]
+            }
+        }
+    }
+]
 
-def show_history():
-    """Displays the in-memory session history."""
-    if not conversation_history:
-        print("\n History is empty for this session.")
-        return
-    print("\n" + "="*70)
-    print(f"{'INDEX':<5} | {'SENDER':<8} | {'MESSAGE'}")
-    print("-" * 70)
-    for i, turn in enumerate(conversation_history):
-        print(f"{i:<5} | {'User':<8} | {turn['user']}")
-        bot_short = (turn['assistant'][:60] + '...') if len(turn['assistant']) > 60 else turn['assistant']
-        print(f"{' ': <5} | {'Bot':<8} | {bot_short}")
-    print("="*70 + "\n")
-
-# STARTUP LOGIC
-print("\n Loading Knowledge Base Documents...")
-pdf_docs = load_all_pdfs_text(str(DATA_DIR / "pdf"))
-image_docs = load_all_images_text(str(DATA_DIR / "images"), client)
-
-documents = []
-ts = int(time.time())
-
-for doc in pdf_docs + image_docs:
-    documents.append({"text": doc["text"], "metadata": {"source": doc["source"], "updated_at": ts}})
-
-if documents:
-    chunks, metadatas = [], []
-    for doc in documents:
-        doc_chunks = chunk_text(doc["text"])
-        chunks.extend(doc_chunks)
-        metadatas.extend([doc["metadata"]] * len(doc_chunks))
-    index = create_faiss_index(embed_texts(chunks), chunks, metadatas)
-    print(f" Loaded {len(pdf_docs)} PDFs and {len(image_docs)} images.")
-else:
-    index = None
-
-# MAIN INTERACTION LOOP
-print("\n" + "="*50)
-print("🤖 BETOPIA AI AGENT ONLINE")
-print("="*50)
-print("COMMANDS:")
-print("• [Type Text] + Enter : Normal Chat")
-print("• [Empty Enter]      : Voice Input Mode")
-print("• /voice             : Toggle Text-to-Voice (On/Off)")
-print("• /history           : View session logs")
-print("• /upload <path>     : Add temp files")
-print("• /clear             : Delete temp uploads")
-print("• exit               : Close Assistant")
-print("-" * 50)
-
-try:
-    while True:
-        raw_input = input("\nYou: ").strip()
-        is_voice_mode = False
-        user_input = raw_input
-
-        # 1. INPUT PROCESSING
-        if raw_input == "":
-            is_voice_mode = True
-            audio_path = record_audio()
-            user_input = speech_to_text(client, audio_path)
-            cleanup_audio(audio_path) 
-            if not user_input or len(user_input.strip()) < 2: continue
-            print(f"🗣️  You said: {user_input}")
-
-        if user_input.lower() == "exit":
-            print("\n👋 Goodbye! Thanks for chatting with Betopia.")
-            break
-
-        # 2. COMMAND HANDLING
-        if user_input.lower() == "/voice":
-            voice_output_enabled = not voice_output_enabled
-            print(f"🔊 Text-to-Voice: {'ENABLED' if voice_output_enabled else 'DISABLED'}")
-            continue
-
-        if user_input.lower() == "/history":
-            show_history()
-            continue
-
-        if user_input.lower() == "/clear":
-            clear_tmp_dir(str(TMP_UPLOAD_DIR))
-            temp_index = None
-            print("🧹 Temporary files cleared.")
-            continue
-
-        if user_input.startswith("/upload"):
+def get_ai_response(user_input):
+    global conversation_history, index
+    
+    # 1. RAG Retrieval
+    retrieved = retrieve_chunks(user_input, index, lambda x: embed_texts([x]), top_k=5) if index else []
+    context = "\n\n".join(r["text"] for r in retrieved)
+    
+    # 2. History Formatting
+    history_pairs = [(h["user"], h["assistant"]) for h in conversation_history]
+    
+    # 3. Build Prompt
+    prompt_content = build_prompt(context, user_input, history_pairs)
+    
+    messages = [
+        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge. Always use tools to verify availability or save bookings. Today is January 21, 2026."},
+        {"role": "user", "content": prompt_content}
+    ]
+    
+    # 4. OpenAI Call
+    response = client.chat.completions.create(
+        model="gpt-4o-mini", 
+        messages=messages, 
+        tools=TOOLS, 
+        tool_choice="auto"
+    )
+    
+    msg = response.choices[0].message
+    
+    # 5. Tool Handling
+    if msg.tool_calls:
+        messages.append(msg)
+        for tool_call in msg.tool_calls:
+            args = json.loads(tool_call.function.arguments)
             try:
-                paths = shlex.split(user_input)[1:]
-                save_uploaded_files(str(TMP_UPLOAD_DIR), paths)
-                temp_index = build_temp_index(str(TMP_UPLOAD_DIR), client)
-                print("✨ Temp index updated.")
+                if tool_call.function.name == "check_room_availability":
+                    # Uses the db_get_room from db_manager
+                    res = db_get_room(args['room_type'], args['check_in'], args['check_out'])
+                    if res:
+                        result = f"Available: {args['room_type']} is ৳{res[1]} per night."
+                    else:
+                        result = f"Unavailable: {args['room_type']} is occupied."
+                
+                elif tool_call.function.name == "finalize_hotel_booking":
+                    # Maps to db_execute_booking which now handles DB + JSON
+                    result = db_execute_booking(
+                        name=args['name'],
+                        email=args['email'],
+                        phone=args['phone'],
+                        room_name=args['room_name'],
+                        check_in=args['check_in'],
+                        check_out=args['check_out']
+                    )
+            
             except Exception as e:
-                print(f" Error: {e}")
-            continue
+                result = f"Error: {str(e)}"
 
-        # 3. AI AGENT LOGIC (RAG + Tools)
-        retrieved = []
-        if index:
-            retrieved.extend(retrieve_chunks(user_input, index, lambda x: embed_texts([x]), top_k=5))
-        if temp_index:
-            retrieved.extend(retrieve_chunks(user_input, temp_index, lambda x: embed_texts([x]), top_k=3))
+            messages.append({
+                "tool_call_id": tool_call.id, 
+                "role": "tool", 
+                "name": tool_call.function.name, 
+                "content": result
+            })
         
-        context = "\n\n".join(r["text"] for r in retrieved)
-        history_pairs = [(h["user"], h["assistant"]) for h in conversation_history]
-        prompt = build_prompt(context, user_input, history_pairs, meeting_status=meeting_scheduled_in_session)
-        
-        messages = [{"role": "user", "content": prompt}]
-        response = client.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=TOOLS, tool_choice="auto")
-        resp_msg = response.choices[0].message
-        
-        if resp_msg.tool_calls:
-            messages.append(resp_msg)
-            for tool_call in resp_msg.tool_calls:
-                args = json.loads(tool_call.function.arguments)
-                action_result = schedule_meeting(**args)
-                if "SUCCESS" in action_result: meeting_scheduled_in_session = True
-                messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": "schedule_meeting", "content": action_result})
-            final_resp = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
-            answer = final_resp.choices[0].message.content
-        else:
-            answer = resp_msg.content
+        # Second call to generate the final verbal response
+        final_res = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
+        return final_res.choices[0].message.content
+    
+    return msg.content
 
-        # 4. OUTPUT
-        print(f"\n🤖 Bot: {answer}")
-        if is_voice_mode or voice_output_enabled: 
-            speak_text(client, answer)
-        
-        print("-" * 60)
-        conversation_history.append({"user": user_input, "assistant": answer})
-        if len(conversation_history) > MAX_MEMORY_TURNS:
-            conversation_history.pop(0)
+def main():
+    global index
+    init_db()  # Ensures tables exist before starting
+    
+    if INDEX_PATH.exists():
+        index = load_faiss_index(str(INDEX_PATH), str(META_PATH))
+        print(" Knowledge Base Loaded.")
+    else:
+        print(" Warning: Knowledge base not found. Alex will rely on general knowledge.")
 
-except KeyboardInterrupt:
-    print("\n👋Session ended. Goodbye!")
-# finally:
-#     clear_tmp_dir(str(TMP_UPLOAD_DIR))
+    print("\n" + "-"*60)
+    print("           GRAND BETOPIA HOTEL IVR SYSTEM           ")
+    print("-"*60)
+
+    try:
+        while True:
+            u_input = input("\nGuest: ").strip()
+            if not u_input: continue
+            if u_input.lower() in ["exit", "quit", "bye"]:
+                print("\nAlex: It was a pleasure serving you. Have a wonderful day!")
+                break
+            
+            reply = get_ai_response(u_input)
+            print(f"\nAlex: {reply}")
+            
+            conversation_history.append({"user": u_input, "assistant": reply})
+            if len(conversation_history) > 10:
+                conversation_history.pop(0)
+
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye.")
+
+if __name__ == "__main__":
+    main()

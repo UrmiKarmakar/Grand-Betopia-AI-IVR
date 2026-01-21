@@ -1,69 +1,65 @@
-import json
-import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
+from dateutil import parser
+# Ensure this path matches your folder structure
+from database.db_manager import db_execute_booking
 
-# Professional logging setup
 logger = logging.getLogger(__name__)
 
-def schedule_meeting(name, email, phone):
+def parse_date_safely(date_str):
+    """Internal helper to ensure AI-provided dates are converted to YYYY-MM-DD."""
+    try:
+        # Default to 2026 as per your system instructions
+        default_date = datetime(2026, 1, 1)
+        return parser.parse(date_str, default=default_date).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+def finalize_hotel_booking(name, email, phone, room_name, check_in, check_out):
     """
-    Saves a meeting record to a local JSON database with duplicate prevention.
-    
-    Industry Standards Applied:
-    1. Atomic writing (prevents file corruption).
-    2. Duplicate Prevention: Checks if the same person registered in the last 5 minutes.
-    3. Path abstraction using absolute paths.
+    Finalizes a hotel reservation with strict date-range validation and auto-parsing.
     """
     try:
-        # Define Paths
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        data_dir = os.path.join(project_root, "data")
-        file_path = os.path.join(data_dir, "meetings.json")
+        # 1. Field Check
+        if not all([name, email, phone, room_name, check_in, check_out]):
+            return "ERROR: Missing details. I need Name, Email, Phone, Room Type, Check-in, and Check-out dates."
 
-        os.makedirs(data_dir, exist_ok=True)
+        # 2. Smart Date Parsing
+        iso_in = parse_date_safely(check_in)
+        iso_out = parse_date_safely(check_out)
 
-        # 1. Read existing data first to check for duplicates
-        meetings = []
-        if os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8") as f:
-                try:
-                    meetings = json.load(f)
-                    if not isinstance(meetings, list):
-                        meetings = []
-                except json.JSONDecodeError:
-                    meetings = []
+        if not iso_in or not iso_out:
+            return f"FAILED: I couldn't understand the dates ({check_in} to {check_out}). Please use YYYY-MM-DD or 'Jan 22'."
 
-        # 2. DUPLICATE PREVENTION LOGIC
-        # We check if the same email OR phone was added in the last 5 minutes
-        # This prevents the AI from double-triggering during the "Confirmation" step.
-        now = datetime.now()
-        for meeting in meetings:
-            if meeting.get("email") == email or meeting.get("phone") == str(phone):
-                last_time = datetime.strptime(meeting["timestamp"], "%Y-%m-%d %H:%M:%S")
-                # If registered within the last 5 minutes, reject as duplicate
-                if now - last_time < timedelta(minutes=5):
-                    logger.warning(f"Duplicate meeting attempt blocked for: {email}")
-                    return f"ALREADY_EXISTS: A meeting for {name} is already recorded."
+        # 3. Logic Validation
+        d1 = datetime.strptime(iso_in, "%Y-%m-%d")
+        d2 = datetime.strptime(iso_out, "%Y-%m-%d")
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # 3. Prepare the new entry
-        new_entry = {
-            "name": name,
-            "email": email,
-            "phone": str(phone),
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
-        }
+        if d1 < today:
+            return f"FAILED: Check-in date ({iso_in}) cannot be in the past."
+        
+        if d2 <= d1:
+            return f"FAILED: Check-out date ({iso_out}) must be after check-in ({iso_in})."
 
-        # 4. Append and Save
-        meetings.append(new_entry)
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(meetings, f, indent=4)
+        # 4. Database Execution (Passes the cleaned ISO dates)
+        result = db_execute_booking(
+            name=name,
+            email=email,
+            phone=str(phone),
+            room_name=room_name,
+            check_in=iso_in,
+            check_out=iso_out
+        )
 
-        # Log success instead of just printing
-        print(f"--> JSON Updated: {file_path}")
-        return f"SUCCESS: Meeting successfully saved for {name}."
+        # 5. Logging
+        if "SUCCESS" in result:
+            logger.info(f"Booking confirmed: {name} | {room_name} | {iso_in} to {iso_out}")
+        else:
+            logger.warning(f"Booking rejected: {result}")
+            
+        return result
 
     except Exception as e:
-        logger.error(f"CRITICAL ERROR SAVING JSON: {str(e)}")
-        return "ERROR: Internal server error while saving data."
+        logger.error(f"CRITICAL ERROR IN ACTION LAYER: {str(e)}")
+        return f"ERROR: System error while processing booking: {str(e)}"

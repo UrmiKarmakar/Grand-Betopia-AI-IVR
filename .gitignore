@@ -1,20 +1,7 @@
-# Python
+venv/
+.env
+data/*.db
+bookings_json/*.json
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Virtual environment
-venv/
-env/
-.venv/
-
-# VS Code settings
-.vscode/
-
-# Environment variables
-.env
-
-# FAISS/Vector DB files (optional)
-*.index
-*.faiss
+.DS_Store
