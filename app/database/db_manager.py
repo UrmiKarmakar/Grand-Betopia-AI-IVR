@@ -88,56 +88,65 @@ def db_get_room(room_name, check_in=None, check_out=None):
     return res 
 
 def db_execute_booking(name, email, phone, room_name, check_in, check_out):
-    """Finalizes booking. Allows the same user (email) to have multiple bookings."""
-    iso_in, iso_out = parse_to_iso(check_in), parse_to_iso(check_out)
+    """Finalizes booking. Prevents orphan users if booking fails."""
     
-    # Optional: Prevent booking if check_in and check_out are the same (0 nights)
-    if iso_in == iso_out:
+    # 1. Validation: Prevent junk data
+    if len(name) < 2 or "@" not in email:
+        return "FAILED: Please provide a valid name and email address."
+
+    iso_in, iso_out = parse_to_iso(check_in), parse_to_iso(check_out)
+    if iso_in >= iso_out:
         return "FAILED: Check-out date must be after check-in date."
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
     try:
-        # 1. Get Room ID
-        cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ?", (f"%{room_name}%",))
-        room = cursor.fetchone()
-        if not room: return "ERROR: Room type not found."
+        # Use a transaction block
+        with conn:
+            # 2. Get Room ID first
+            cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ?", (f"%{room_name}%",))
+            room = cursor.fetchone()
+            if not room: 
+                return "ERROR: Room type not found."
 
-        # 2. Check Overlap (Ignore User, only check the Room ID and Dates)
-        cursor.execute("SELECT COUNT(*) FROM Bookings WHERE S_ID=? AND (check_in < ? AND check_out > ?)", 
-                       (room[0], iso_out, iso_in))
-        if cursor.fetchone()[0] > 0: 
-            return "OCCUPIED: This room type is already booked for these dates."
+            # 3. Check Overlap (Strict check before creating User)
+            cursor.execute("SELECT COUNT(*) FROM Bookings WHERE S_ID=? AND (check_in < ? AND check_out > ?)", 
+                           (room[0], iso_out, iso_in))
+            if cursor.fetchone()[0] > 0: 
+                return "OCCUPIED: This room is already booked for these dates."
 
-        # 3. Handle Guest (INSERT OR IGNORE allows same user to exist, we just fetch their U_ID)
-        cursor.execute("INSERT OR IGNORE INTO User (name, email, phone) VALUES (?,?,?)", (name, email, phone))
-        cursor.execute("SELECT U_ID FROM User WHERE email=?", (email,))
-        u_id = cursor.fetchone()[0]
-        
-        # 4. Save Booking (Multiple bookings for same U_ID are naturally allowed here)
-        cursor.execute("INSERT INTO Bookings (U_ID, S_ID, check_in, check_out) VALUES (?,?,?,?)", 
-                       (u_id, room[0], iso_in, iso_out))
-        b_id = cursor.lastrowid
+            # 4. Handle User (This is now part of the transaction)
+            cursor.execute("INSERT OR IGNORE INTO User (name, email, phone) VALUES (?,?,?)", (name, email, phone))
+            cursor.execute("SELECT U_ID FROM User WHERE email=?", (email,))
+            u_id = cursor.fetchone()[0]
+            
+            # 5. Save Booking
+            cursor.execute("INSERT INTO Bookings (U_ID, S_ID, check_in, check_out) VALUES (?,?,?,?)", 
+                           (u_id, room[0], iso_in, iso_out))
+            b_id = cursor.lastrowid
 
-        # 5. Save to JSON for external verification
-        booking_data = {
-            "booking_id": b_id,
-            "guest": {"name": name, "email": email, "phone": phone},
-            "room": room_name,
-            "stay": {"check_in": iso_in, "check_out": iso_out},
-            "total_nights": (datetime.strptime(iso_out, "%Y-%m-%d") - datetime.strptime(iso_in, "%Y-%m-%d")).days,
-            "timestamp": datetime.now().isoformat()
-        }
-        with open(JSON_DIR / f"booking_{b_id}.json", "w") as f:
-            json.dump(booking_data, f, indent=4)
+            # 6. Save to JSON (only if DB part succeeded)
+            booking_data = {
+                "booking_id": b_id,
+                "guest": {"name": name, "email": email, "phone": phone},
+                "room": room_name,
+                "stay": {"check_in": iso_in, "check_out": iso_out},
+                "total_nights": (datetime.strptime(iso_out, "%Y-%m-%d") - datetime.strptime(iso_in, "%Y-%m-%d")).days,
+                "timestamp": datetime.now().isoformat()
+            }
+            with open(JSON_DIR / f"booking_{b_id}.json", "w") as f:
+                json.dump(booking_data, f, indent=4)
 
-        conn.commit()
-        return f"SUCCESS: Booking #{b_id} confirmed."
+        # If we reach here, 'with conn' automatically commits
+        return f"SUCCESS: Booking #{b_id} confirmed for {name}."
+
     except Exception as e:
+        # 'with conn' automatically rolls back if an exception occurs
         return f"FAILED: {str(e)}"
     finally:
         conn.close()
-
+        
 def db_cancel_booking(email, room_name):
     """Deletes booking from DB and JSON folder to free up availability."""
     conn = sqlite3.connect(DB_PATH)

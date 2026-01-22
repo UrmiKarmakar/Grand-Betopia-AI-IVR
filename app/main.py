@@ -1,4 +1,3 @@
-# app/main.py
 import os
 import json
 import sys
@@ -37,22 +36,19 @@ conversation_history = []
 def get_ai_response(user_input):
     global conversation_history, index
     
-    # 1. RAG Retrieval
-    retrieved = retrieve_chunks(user_input, index, lambda x: embed_texts([x]), top_k=5) if index else []
+    # 1. RAG Retrieval (top_k=3 for speed)
+    retrieved = retrieve_chunks(user_input, index, lambda x: embed_texts([x]), top_k=3) if index else []
     context = "\n\n".join(r["text"] for r in retrieved)
     
-    # 2. History Formatting
     history_pairs = [(h["user"], h["assistant"]) for h in conversation_history]
-    
-    # 3. Build Prompt
     prompt_content = build_prompt(context, user_input, history_pairs)
     
     messages = [
-        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge. Always use tools to verify availability, save, or cancel bookings. Today is January 21, 2026."},
+        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge."},
         {"role": "user", "content": prompt_content}
     ]
     
-    # 4. Initial OpenAI Call
+    # 2. First Call to check for Tool use
     response = client.chat.completions.create(
         model="gpt-4o-mini", 
         messages=messages, 
@@ -62,7 +58,7 @@ def get_ai_response(user_input):
     
     msg = response.choices[0].message
     
-    # 5. Tool Handling Logic
+    # 3. Tool Handling Logic
     if msg.tool_calls:
         messages.append(msg)
         for tool_call in msg.tool_calls:
@@ -73,31 +69,30 @@ def get_ai_response(user_input):
                 if call_name == "check_room_availability":
                     res = db_get_room(args['room_type'], args['check_in'], args['check_out'])
                     result = f"Available: {args['room_type']} at ৳{res[1]} per night." if res else "Unavailable: Occupied."
-                
                 elif call_name == "finalize_hotel_booking":
                     result = db_execute_booking(**args)
-                    
                 elif call_name == "cancel_hotel_booking":
-                    # Integration with the new Cancellation function
                     result = db_cancel_booking(args['email'], args['room_name'])
                 else:
                     result = "Error: Tool not found."
-            
             except Exception as e:
                 result = f"System Error: {str(e)}"
 
-            messages.append({
-                "tool_call_id": tool_call.id, 
-                "role": "tool", 
-                "name": call_name, 
-                "content": result
-            })
+            messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": call_name, "content": result})
         
-        # Second call to generate the verbal response based on tool results
-        final_res = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
-        return final_res.choices[0].message.content
+        # FINAL CALL WITH STREAMING
+        return client.chat.completions.create(
+            model="gpt-4o-mini", 
+            messages=messages,
+            stream=True 
+        )
     
-    return msg.content
+    # If no tool, we still stream for consistency/speed
+    return client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        stream=True
+    )
 
 def main():
     global index
@@ -121,10 +116,22 @@ def main():
                 print("\nAlex: It was a pleasure serving you. Have a wonderful day!")
                 break
             
-            reply = get_ai_response(u_input)
-            print(f"\nAlex: {reply}")
+            # Get the generator/stream from AI
+            reply_stream = get_ai_response(u_input)
             
-            conversation_history.append({"user": u_input, "assistant": reply})
+            print("\nAlex: ", end="", flush=True)
+            full_reply = ""
+            
+            # ITERATE THROUGH STREAM (This is where speed happens)
+            for chunk in reply_stream:
+                content = chunk.choices[0].delta.content
+                if content:
+                    print(content, end="", flush=True)
+                    full_reply += content
+            
+            print() # New line after response is finished
+            
+            conversation_history.append({"user": u_input, "assistant": full_reply})
             if len(conversation_history) > 10:
                 conversation_history.pop(0)
 
