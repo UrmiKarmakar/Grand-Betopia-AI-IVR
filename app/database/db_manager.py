@@ -1,11 +1,10 @@
-# app/database/db_manager.py
 import sqlite3
 import json
 import re
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from dateutil import parser
-from dateutil.parser import parse
 
 # --- PATH LOGIC ---
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,43 +16,47 @@ JSON_DIR = BASE_DIR / "bookings_json"
 JSON_DIR.mkdir(exist_ok=True)
 
 def parse_to_iso(date_str):
-    """Converts natural dates (e.g. '22 Jan') to ISO (2026-01-22)."""
     if not date_str: return None
     try:
-        # Reference date set to Jan 21, 2026
-        # Using 'parser.parse' requires 'from dateutil import parser'
-        return parser.parse(date_str, default=datetime(2026, 1, 21)).strftime("%Y-%m-%d")
+        # Reference date set to Jan 2026
+        return parser.parse(date_str, default=datetime(2026, 1, 1)).strftime("%Y-%m-%d")
     except:
-        return date_str
-
-def is_valid_email(email):
-    """Basic email validation to ensure data quality."""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(pattern, email) is not None
+        return None
 
 def init_db():
-    """Initializes tables and seeds all room data from the guide."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
     cursor.executescript('''
-        CREATE TABLE IF NOT EXISTS User (U_ID INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, phone TEXT);
-        CREATE TABLE IF NOT EXISTS Services (S_ID INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, price REAL);
-        CREATE TABLE IF NOT EXISTS Bookings (B_ID INTEGER PRIMARY KEY AUTOINCREMENT, U_ID INTEGER, S_ID INTEGER, check_in TEXT, check_out TEXT);
+        CREATE TABLE IF NOT EXISTS User (
+            U_ID INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT, 
+            email TEXT UNIQUE, 
+            phone TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Services (
+            S_ID INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT UNIQUE, 
+            price REAL
+        );
+        CREATE TABLE IF NOT EXISTS Bookings (
+            B_ID INTEGER PRIMARY KEY AUTOINCREMENT, 
+            U_ID INTEGER, 
+            S_ID INTEGER, 
+            check_in TEXT, 
+            check_out TEXT,
+            FOREIGN KEY(U_ID) REFERENCES User(U_ID),
+            FOREIGN KEY(S_ID) REFERENCES Services(S_ID)
+        );
     ''')
     
-    # Check current service count
     cursor.execute("SELECT count(*) FROM Services")
     if cursor.fetchone()[0] == 0:
-        # Seed room data
         rooms = [
-            ('Deluxe King', 16230.0), 
-            ('Deluxe Twin', 16230.0),
-            ('Premier King', 24645.0), 
-            ('Premier Twin', 24645.0),
-            ('Pacific Club Twin', 36066.0),
-            ('Junior Suite', 48088.0),
-            ('Executive Suite', 54100.0),
-            ('Bengali Suite', 60110.0),
+            ('Deluxe King', 16230.0), ('Deluxe Twin', 16230.0),
+            ('Premier King', 24645.0), ('Premier Twin', 24645.0),
+            ('Pacific Club Twin', 36066.0), ('Junior Suite', 48088.0),
+            ('Executive Suite', 54100.0), ('Bengali Suite', 60110.0),
             ('International Suite', 72132.0)
         ]
         cursor.executemany("INSERT INTO Services (name, price) VALUES (?,?)", rooms)
@@ -61,21 +64,16 @@ def init_db():
     conn.close()
 
 def db_get_all_rooms():
-    """Fetches every room in the Services table to ensure all 9 are visible."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT name, price FROM Services")
-        rooms = cursor.fetchall()
-        # Returns a list of strings for the tool output
-        return "\n".join([f"- {r[0]}: ৳{r[1]:,.0f}" for r in rooms])
-    finally:
-        conn.close()
+    cursor.execute("SELECT name, price FROM Services")
+    rooms = cursor.fetchall()
+    conn.close()
+    return "\n".join([f"- {r[0]}: ৳{r[1]:,.0f}" for r in rooms])
 
-def db_get_room(room_name, check_in=None, check_out=None):
-    """Modified to distinguish between 'Room Exists' and 'Room is Available'."""
-    iso_in = parse_to_iso(check_in)
-    iso_out = parse_to_iso(check_out)
+def db_get_room(room_name, check_in, check_out):
+    iso_in, iso_out = parse_to_iso(check_in), parse_to_iso(check_out)
+    if not iso_in or not iso_out: return None
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -86,11 +84,6 @@ def db_get_room(room_name, check_in=None, check_out=None):
         conn.close()
         return None
 
-    # If dates are missing, return the price but flag that we need dates
-    if not iso_in or not iso_out:
-        conn.close()
-        return (res[0], res[1], "NEED_DATES")
-
     cursor.execute('''
         SELECT COUNT(*) FROM Bookings 
         WHERE S_ID = ? AND (check_in < ? AND check_out > ?)
@@ -98,119 +91,115 @@ def db_get_room(room_name, check_in=None, check_out=None):
     
     occupied = cursor.fetchone()[0] > 0
     conn.close()
-    
-    return None if occupied else (res[0], res[1], "AVAILABLE") 
+    return None if occupied else (res[0], res[1])
 
 def db_execute_booking(name, email, phone, room_name, check_in, check_out):
-    """Finalizes booking. Prevents orphan users if booking fails."""
-    
-    # 1. Validation: Prevent junk data
-    if len(name) < 2 or "@" not in email:
-        return "FAILED: Please provide a valid name and email address."
-
     iso_in, iso_out = parse_to_iso(check_in), parse_to_iso(check_out)
-    if iso_in >= iso_out:
-        return "FAILED: Check-out date must be after check-in date."
-
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     try:
-        # Use a transaction block
         with conn:
-            # 2. Get Room ID first
-            cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ?", (f"%{room_name}%",))
+            cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ? LIMIT 1", (f"%{room_name}%",))
             room = cursor.fetchone()
-            if not room: 
-                return "ERROR: Room type not found."
+            if not room: return "ERROR: Room not found."
 
-            # 3. Check Overlap (Strict check before creating User)
-            cursor.execute("SELECT COUNT(*) FROM Bookings WHERE S_ID=? AND (check_in < ? AND check_out > ?)", 
-                           (room[0], iso_out, iso_in))
-            if cursor.fetchone()[0] > 0: 
-                return "OCCUPIED: This room is already booked for these dates."
-
-            # 4. Handle User (This is now part of the transaction)
-            cursor.execute("INSERT OR IGNORE INTO User (name, email, phone) VALUES (?,?,?)", (name, email, phone))
+            cursor.execute('''
+                INSERT INTO User (name, email, phone) VALUES (?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET phone=excluded.phone, name=excluded.name
+            ''', (name, email, phone))
+            
             cursor.execute("SELECT U_ID FROM User WHERE email=?", (email,))
             u_id = cursor.fetchone()[0]
-            
-            # 5. Save Booking
-            cursor.execute("INSERT INTO Bookings (U_ID, S_ID, check_in, check_out) VALUES (?,?,?,?)", 
+
+            cursor.execute("INSERT INTO Bookings (U_ID, S_ID, check_in, check_out) VALUES (?, ?, ?, ?)",
                            (u_id, room[0], iso_in, iso_out))
             b_id = cursor.lastrowid
 
-            # 6. Save to JSON (only if DB part succeeded)
-            booking_data = {
-                "booking_id": b_id,
-                "guest": {"name": name, "email": email, "phone": phone},
-                "room": room_name,
-                "stay": {"check_in": iso_in, "check_out": iso_out},
-                "total_nights": (datetime.strptime(iso_out, "%Y-%m-%d") - datetime.strptime(iso_in, "%Y-%m-%d")).days,
-                "timestamp": datetime.now().isoformat()
-            }
+            # JSON Confirmation
+            nights = max((datetime.strptime(iso_out, "%Y-%m-%d") - datetime.strptime(iso_in, "%Y-%m-%d")).days, 1)
+            data = {"booking_id": b_id, "guest": email, "room": room_name, "total": room[1]*nights}
             with open(JSON_DIR / f"booking_{b_id}.json", "w") as f:
-                json.dump(booking_data, f, indent=4)
+                json.dump(data, f, indent=4)
 
-        # If we reach here, 'with conn' automatically commits
-        return f"SUCCESS: Booking #{b_id} confirmed for {name}."
-
+        return f"SUCCESS: Booking #{b_id} confirmed."
     except Exception as e:
-        # 'with conn' automatically rolls back if an exception occurs
         return f"FAILED: {str(e)}"
     finally:
         conn.close()
-        
-def db_cancel_booking(email, room_name):
-    """Deletes booking from DB and JSON folder to free up availability."""
+
+def db_modify_booking(email, current_room, new_room=None, new_check_in=None, new_check_out=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # Find the booking ID
+        # 1. Locate the existing booking
         cursor.execute('''
-            SELECT b.B_ID FROM Bookings b
-            JOIN User u ON b.U_ID = u.U_ID
+            SELECT b.B_ID FROM Bookings b JOIN User u ON b.U_ID = u.U_ID
             JOIN Services s ON b.S_ID = s.S_ID
-            WHERE u.email = ? AND s.name LIKE ?
-            ORDER BY b.B_ID DESC LIMIT 1
-        ''', (email, f"%{room_name}%"))
-        
+            WHERE u.email = ? AND s.name LIKE ? ORDER BY b.B_ID DESC LIMIT 1
+        ''', (email, f"%{current_room}%"))
         res = cursor.fetchone()
-        if res:
-            b_id = res[0]
-            cursor.execute("DELETE FROM Bookings WHERE B_ID = ?", (b_id,))
+        if not res: return "ERROR: No existing booking found for this email and room."
+        
+        b_id = res[0]
+        
+        # 2. Update Database via transaction
+        with conn:
+            if new_room:
+                cursor.execute("SELECT S_ID FROM Services WHERE name LIKE ?", (f"%{new_room}%",))
+                s_id = cursor.fetchone()
+                if s_id: cursor.execute("UPDATE Bookings SET S_ID = ? WHERE B_ID = ?", (s_id[0], b_id))
             
-            # Delete JSON
-            json_file = JSON_DIR / f"booking_{b_id}.json"
-            if json_file.exists(): json_file.unlink()
-            
-            conn.commit()
-            return f"SUCCESS: Booking #{b_id} cancelled. Room is now available."
-        return "ERROR: No matching booking found for that email and room."
+            if new_check_in: 
+                cursor.execute("UPDATE Bookings SET check_in = ? WHERE B_ID = ?", (parse_to_iso(new_check_in), b_id))
+            if new_check_out: 
+                cursor.execute("UPDATE Bookings SET check_out = ? WHERE B_ID = ?", (parse_to_iso(new_check_out), b_id))
+
+        # 3. Synchronize JSON (Fetch fresh data from DB to ensure file accuracy)
+        cursor.execute('''
+            SELECT s.name, s.price, b.check_in, b.check_out 
+            FROM Bookings b JOIN Services s ON b.S_ID = s.S_ID WHERE b.B_ID = ?
+        ''', (b_id,))
+        updated = cursor.fetchone()
+        
+        if updated:
+            nights = max((datetime.strptime(updated[3], "%Y-%m-%d") - datetime.strptime(updated[2], "%Y-%m-%d")).days, 1)
+            data = {
+                "booking_id": b_id,
+                "guest": email,
+                "room": updated[0],
+                "total": updated[1] * nights,
+                "last_modified": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open(JSON_DIR / f"booking_{b_id}.json", "w") as f:
+                json.dump(data, f, indent=4)
+        
+        return f"SUCCESS: Booking #{b_id} updated."
+    except Exception as e:
+        return f"ERROR: {str(e)}"
     finally:
         conn.close()
 
-def standardize_dates(check_in_str, check_out_str=None, duration=None):
-    ref_date = datetime(2026, 1, 21) 
-    # This will now work without the yellow line
-    start_date = parse(check_in_str, default=ref_date)
-
-    if duration:
-        # If guest said "2 nights", calculate check-out automatically
-        end_date = start_date + timedelta(days=int(duration))
-    else:
-        # Parse the provided check-out string
-        end_date = parse(check_out_str, default=ref_date)
-
-    # Calculate actual nights for pricing
-    nights = (end_date - start_date).days
-    
-    return start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), nights
-
-def get_total_price(rate, check_in, check_out):
-    # Ensure dates are in YYYY-MM-DD format
-    fmt = "%Y-%m-%d"
-    d1 = datetime.strptime(check_in, fmt)
-    d2 = datetime.strptime(check_out, fmt)
-    nights = (d2 - d1).days
-    return rate * nights
+def db_cancel_booking(email, room_name):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT b.B_ID FROM Bookings b JOIN User u ON b.U_ID = u.U_ID
+            JOIN Services s ON b.S_ID = s.S_ID
+            WHERE u.email = ? AND s.name LIKE ? LIMIT 1
+        ''', (email, f"%{room_name}%"))
+        res = cursor.fetchone()
+        if res:
+            b_id = res[0]
+            with conn:
+                cursor.execute("DELETE FROM Bookings WHERE B_ID = ?", (b_id,))
+            
+            # Remove JSON file upon cancellation
+            json_file = JSON_DIR / f"booking_{b_id}.json"
+            if json_file.exists():
+                json_file.unlink()
+                
+            return f"SUCCESS: Booking #{b_id} cancelled."
+        return "ERROR: Booking not found."
+    finally:
+        conn.close()

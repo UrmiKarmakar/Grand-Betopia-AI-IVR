@@ -14,7 +14,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 # Database and RAG Imports
-from database.db_manager import init_db, db_get_room, db_execute_booking, db_cancel_booking
+from database.db_manager import (
+    init_db, 
+    db_get_room, 
+    db_execute_booking, 
+    db_cancel_booking, 
+    db_modify_booking, 
+    db_get_all_rooms
+)
 from rag.vector_store import load_faiss_index
 from rag.retriever import retrieve_chunks
 from rag.embeddings import embed_texts
@@ -44,11 +51,21 @@ def get_ai_response(user_input):
     prompt_content = build_prompt(context, user_input, history_pairs)
     
     messages = [
-        {"role": "system", "content": "You are Alex, the Grand Betopia Concierge."},
+        {
+            "role": "system", 
+            "content": (
+                "You are Alex, the Grand Betopia Concierge. "
+                "STRICT BOOKING RULES:\n"
+                "1. If a guest selects a room, you MUST ask for BOTH check-in and check-out dates before checking availability.\n"
+                "2. To modify an existing booking, you MUST extract the guest's email from the history or ask for it.\n"
+                "3. Never confirm a booking or modification unless the tool returns a SUCCESS message.\n"
+                "4. If a tool returns an error, explain the issue politely to the guest."
+            )
+        },
         {"role": "user", "content": prompt_content}
     ]
     
-    # 2. First Call to check for Tool use
+    # 2. Call to check for Tool use (Non-streaming for tool selection is more stable)
     response = client.chat.completions.create(
         model="gpt-4o-mini", 
         messages=messages, 
@@ -66,30 +83,19 @@ def get_ai_response(user_input):
             call_name = tool_call.function.name
             
             try:
-                # NEW: Fetch all 9 rooms from DB
                 if call_name == "get_all_room_types":
-                    from database.db_manager import db_get_all_rooms
                     result = db_get_all_rooms()
-
                 elif call_name == "check_room_availability":
-                    # Check if dates were actually provided by the AI/Guest
-                    check_in = args.get('check_in')
-                    check_out = args.get('check_out')
-                    
-                    # Logic Gate: If dates are missing, don't query occupancy
+                    check_in, check_out = args.get('check_in'), args.get('check_out')
                     if not check_in or not check_out:
-                        result = "INFO: I cannot check availability without specific dates. Please ask the guest for their check-in date and duration first."
+                        result = "INFO: Missing dates. Ask the guest for check-in and check-out dates."
                     else:
                         res = db_get_room(args['room_type'], check_in, check_out)
-                        if res:
-                            # Handle the 3rd 'status' element from our updated db_manager
-                            status = res[2] if len(res) > 2 else "AVAILABLE"
-                            result = f"Available: {args['room_type']} at ৳{res[1]:,.0f} per night."
-                        else:
-                            result = f"Unavailable: The {args['room_type']} is occupied for those dates."
-
+                        result = f"Available: {args['room_type']} at ৳{res[1]:,.0f}/night." if res else "Occupied."
                 elif call_name == "finalize_hotel_booking":
                     result = db_execute_booking(**args)
+                elif call_name == "modify_hotel_booking":
+                    result = db_modify_booking(**args)
                 elif call_name == "cancel_hotel_booking":
                     result = db_cancel_booking(args['email'], args['room_name'])
                 else:
@@ -99,8 +105,11 @@ def get_ai_response(user_input):
 
             messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": call_name, "content": result})
         
+        # Second call to summarize the tool result (Streaming)
         return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
     
+    # No tool call needed, just stream the response
+    # Re-call with stream=True for the initial response if no tool was detected
     return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
 
 def main():
@@ -125,21 +134,17 @@ def main():
                 print("\nAlex: It was a pleasure serving you. Have a wonderful day!")
                 break
             
-            # Get the generator/stream from AI
             reply_stream = get_ai_response(u_input)
-            
             print("\nAlex: ", end="", flush=True)
             full_reply = ""
             
-            # ITERATE THROUGH STREAM (This is where speed happens)
             for chunk in reply_stream:
                 content = chunk.choices[0].delta.content
                 if content:
                     print(content, end="", flush=True)
                     full_reply += content
             
-            print() # New line after response is finished
-            
+            print() 
             conversation_history.append({"user": u_input, "assistant": full_reply})
             if len(conversation_history) > 10:
                 conversation_history.pop(0)
