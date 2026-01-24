@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- PATH LOGIC ---
+# --- UPDATED PATH LOGIC ---
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DB_DIR = BASE_DIR / "data"
-DB_DIR.mkdir(exist_ok=True)
-DB_PATH = DB_DIR / "hotel_ivr.db"
+# Change DB_DIR to BASE_DIR to keep it in the root
+DB_PATH = BASE_DIR / "hotel_database.db" 
 
 JSON_DIR = BASE_DIR / "bookings_json"
 JSON_DIR.mkdir(exist_ok=True)
@@ -131,30 +131,34 @@ def db_modify_booking(email, current_room, new_room=None, new_check_in=None, new
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # 1. Locate the existing booking
+        # 1. Find the booking ID using email and the OLD room name
         cursor.execute('''
             SELECT b.B_ID FROM Bookings b JOIN User u ON b.U_ID = u.U_ID
             JOIN Services s ON b.S_ID = s.S_ID
             WHERE u.email = ? AND s.name LIKE ? ORDER BY b.B_ID DESC LIMIT 1
         ''', (email, f"%{current_room}%"))
         res = cursor.fetchone()
-        if not res: return "ERROR: No existing booking found for this email and room."
+        
+        if not res: 
+            return "ERROR: No existing booking found for this email and room."
         
         b_id = res[0]
         
-        # 2. Update Database via transaction
         with conn:
+            # 2. Update to the NEW room if provided
             if new_room:
-                cursor.execute("SELECT S_ID FROM Services WHERE name LIKE ?", (f"%{new_room}%",))
-                s_id = cursor.fetchone()
-                if s_id: cursor.execute("UPDATE Bookings SET S_ID = ? WHERE B_ID = ?", (s_id[0], b_id))
+                cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ?", (f"%{new_room}%",))
+                room_data = cursor.fetchone()
+                if room_data:
+                    cursor.execute("UPDATE Bookings SET S_ID = ? WHERE B_ID = ?", (room_data[0], b_id))
             
+            # 3. Update dates if provided
             if new_check_in: 
                 cursor.execute("UPDATE Bookings SET check_in = ? WHERE B_ID = ?", (parse_to_iso(new_check_in), b_id))
             if new_check_out: 
                 cursor.execute("UPDATE Bookings SET check_out = ? WHERE B_ID = ?", (parse_to_iso(new_check_out), b_id))
 
-        # 3. Synchronize JSON (Fetch fresh data from DB to ensure file accuracy)
+        # 4. CRITICAL: Sync the JSON file after the DB update
         cursor.execute('''
             SELECT s.name, s.price, b.check_in, b.check_out 
             FROM Bookings b JOIN Services s ON b.S_ID = s.S_ID WHERE b.B_ID = ?
@@ -162,13 +166,14 @@ def db_modify_booking(email, current_room, new_room=None, new_check_in=None, new
         updated = cursor.fetchone()
         
         if updated:
-            nights = max((datetime.strptime(updated[3], "%Y-%m-%d") - datetime.strptime(updated[2], "%Y-%m-%d")).days, 1)
+            # Calculate total and save to JSON
+            iso_in, iso_out = updated[2], updated[3]
+            nights = max((datetime.strptime(iso_out, "%Y-%m-%d") - datetime.strptime(iso_in, "%Y-%m-%d")).days, 1)
             data = {
                 "booking_id": b_id,
                 "guest": email,
                 "room": updated[0],
-                "total": updated[1] * nights,
-                "last_modified": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "total": updated[1] * nights
             }
             with open(JSON_DIR / f"booking_{b_id}.json", "w") as f:
                 json.dump(data, f, indent=4)
@@ -178,6 +183,7 @@ def db_modify_booking(email, current_room, new_room=None, new_check_in=None, new
         return f"ERROR: {str(e)}"
     finally:
         conn.close()
+
 
 def db_cancel_booking(email, room_name):
     conn = sqlite3.connect(DB_PATH)

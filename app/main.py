@@ -65,7 +65,7 @@ def get_ai_response(user_input):
         {"role": "user", "content": prompt_content}
     ]
     
-    # 2. Call to check for Tool use (Non-streaming for tool selection is more stable)
+    # 2. Call to check for Tool use
     response = client.chat.completions.create(
         model="gpt-4o-mini", 
         messages=messages, 
@@ -95,7 +95,12 @@ def get_ai_response(user_input):
                 elif call_name == "finalize_hotel_booking":
                     result = db_execute_booking(**args)
                 elif call_name == "modify_hotel_booking":
-                    result = db_modify_booking(**args)
+                    # The AI must extract 'current_room' from conversation history 
+                    # and 'new_room' from the latest request.
+                    if not args.get('email'):
+                        result = "ERROR: Email required for modification. Ask the guest for the email used for the booking."
+                    else:
+                        result = db_modify_booking(**args)
                 elif call_name == "cancel_hotel_booking":
                     result = db_cancel_booking(args['email'], args['room_name'])
                 else:
@@ -105,11 +110,8 @@ def get_ai_response(user_input):
 
             messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": call_name, "content": result})
         
-        # Second call to summarize the tool result (Streaming)
         return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
     
-    # No tool call needed, just stream the response
-    # Re-call with stream=True for the initial response if no tool was detected
     return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
 
 def main():
