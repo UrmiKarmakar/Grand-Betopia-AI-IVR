@@ -36,7 +36,7 @@ conversation_history = []
 def get_ai_response(user_input):
     global conversation_history, index
     
-    # 1. RAG Retrieval (top_k=3 for speed)
+    # 1. RAG Retrieval
     retrieved = retrieve_chunks(user_input, index, lambda x: embed_texts([x]), top_k=3) if index else []
     context = "\n\n".join(r["text"] for r in retrieved)
     
@@ -66,9 +66,28 @@ def get_ai_response(user_input):
             call_name = tool_call.function.name
             
             try:
-                if call_name == "check_room_availability":
-                    res = db_get_room(args['room_type'], args['check_in'], args['check_out'])
-                    result = f"Available: {args['room_type']} at ৳{res[1]} per night." if res else "Unavailable: Occupied."
+                # NEW: Fetch all 9 rooms from DB
+                if call_name == "get_all_room_types":
+                    from database.db_manager import db_get_all_rooms
+                    result = db_get_all_rooms()
+
+                elif call_name == "check_room_availability":
+                    # Check if dates were actually provided by the AI/Guest
+                    check_in = args.get('check_in')
+                    check_out = args.get('check_out')
+                    
+                    # Logic Gate: If dates are missing, don't query occupancy
+                    if not check_in or not check_out:
+                        result = "INFO: I cannot check availability without specific dates. Please ask the guest for their check-in date and duration first."
+                    else:
+                        res = db_get_room(args['room_type'], check_in, check_out)
+                        if res:
+                            # Handle the 3rd 'status' element from our updated db_manager
+                            status = res[2] if len(res) > 2 else "AVAILABLE"
+                            result = f"Available: {args['room_type']} at ৳{res[1]:,.0f} per night."
+                        else:
+                            result = f"Unavailable: The {args['room_type']} is occupied for those dates."
+
                 elif call_name == "finalize_hotel_booking":
                     result = db_execute_booking(**args)
                 elif call_name == "cancel_hotel_booking":
@@ -80,19 +99,9 @@ def get_ai_response(user_input):
 
             messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": call_name, "content": result})
         
-        # FINAL CALL WITH STREAMING
-        return client.chat.completions.create(
-            model="gpt-4o-mini", 
-            messages=messages,
-            stream=True 
-        )
+        return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
     
-    # If no tool, we still stream for consistency/speed
-    return client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        stream=True
-    )
+    return client.chat.completions.create(model="gpt-4o-mini", messages=messages, stream=True)
 
 def main():
     global index

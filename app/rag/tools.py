@@ -1,4 +1,3 @@
-# app/rag/tools.py
 TOOLS = [
     {
         "type": "function",
@@ -19,6 +18,29 @@ TOOLS = [
             }
         }
     },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "get_all_room_types",
+            "description": "Fetch all available hotel room types and their current prices from the database.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+
+    {
+    "type": "function",
+    "function": {
+        "name": "get_all_room_types",
+        "description": "Fetch the full list of 9 room categories and prices from the database.",
+        "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    
     {
         "type": "function",
         "function": {
@@ -50,6 +72,36 @@ TOOLS = [
                     "room_name": {"type": "string", "description": "The name of the room type to be cancelled."}
                 },
                 "required": ["email", "room_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_hotel_booking",
+            "description": "Changes the dates of an existing booking. Requires the Booking ID and new dates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "booking_id": {"type": "integer", "description": "The unique B_ID from the guest's receipt."},
+                    "new_check_in": {"type": "string", "description": "New check-in date (YYYY-MM-DD)."},
+                    "new_check_out": {"type": "string", "description": "New check-out date (YYYY-MM-DD)."}
+                },
+                "required": ["booking_id", "new_check_in", "new_check_out"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_booking_by_email",
+            "description": "Finds the guest's current booking ID and dates using their email address. Use this if the guest wants to modify or cancel but forgot their booking ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "The guest's email address."}
+                },
+                "required": ["email"]
             }
         }
     }

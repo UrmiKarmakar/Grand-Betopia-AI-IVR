@@ -60,32 +60,46 @@ def init_db():
     conn.commit()
     conn.close()
 
+def db_get_all_rooms():
+    """Fetches every room in the Services table to ensure all 9 are visible."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT name, price FROM Services")
+        rooms = cursor.fetchall()
+        # Returns a list of strings for the tool output
+        return "\n".join([f"- {r[0]}: ৳{r[1]:,.0f}" for r in rooms])
+    finally:
+        conn.close()
+
 def db_get_room(room_name, check_in=None, check_out=None):
-    """Fetches room price and checks availability strictly by dates, not user."""
+    """Modified to distinguish between 'Room Exists' and 'Room is Available'."""
     iso_in = parse_to_iso(check_in)
     iso_out = parse_to_iso(check_out)
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Search for the room
     cursor.execute("SELECT S_ID, price FROM Services WHERE name LIKE ? LIMIT 1", (f"%{room_name}%",))
     res = cursor.fetchone()
     
-    if res and iso_in and iso_out:
-        # STRICT OVERLAP LOGIC: 
-        # A room is taken ONLY if (Existing_In < New_Out) AND (Existing_Out > New_In)
-        cursor.execute('''
-            SELECT COUNT(*) FROM Bookings 
-            WHERE S_ID = ? AND (check_in < ? AND check_out > ?)
-        ''', (res[0], iso_out, iso_in))
-        
-        if cursor.fetchone()[0] > 0:
-            conn.close()
-            return None # Room is occupied by someone else (or a different booking by same user)
-            
+    if not res:
+        conn.close()
+        return None
+
+    # If dates are missing, return the price but flag that we need dates
+    if not iso_in or not iso_out:
+        conn.close()
+        return (res[0], res[1], "NEED_DATES")
+
+    cursor.execute('''
+        SELECT COUNT(*) FROM Bookings 
+        WHERE S_ID = ? AND (check_in < ? AND check_out > ?)
+    ''', (res[0], iso_out, iso_in))
+    
+    occupied = cursor.fetchone()[0] > 0
     conn.close()
-    return res 
+    
+    return None if occupied else (res[0], res[1], "AVAILABLE") 
 
 def db_execute_booking(name, email, phone, room_name, check_in, check_out):
     """Finalizes booking. Prevents orphan users if booking fails."""
